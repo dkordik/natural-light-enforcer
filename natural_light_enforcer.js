@@ -6,9 +6,10 @@ const fs = require('fs');
 const path = require('path');
 
 const DEBOUNCE_SECONDS = 2;
-const GROUP_DEBOUNCE_SECONDS = 2;
 const CONNECTIVITY_POLL_MS = 1000;
 const RECONNECT_DELAY_MS = 5000;
+const CONNECTED_ON_RETRY_COUNT = 5;
+const CONNECTED_ON_RETRY_DELAY_MS = 250;
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
@@ -18,6 +19,10 @@ function nowMonoSeconds() {
 
 function ts() {
   return new Date().toISOString();
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function readFirstToken(filePath) {
@@ -258,7 +263,7 @@ class NaturalLightEnforcer {
     this.lastConnectivityStatus = new Map();
     this.lightNames = new Map();
     this.lastActivation = new Map();
-    this.lastGroupActivation = new Map();
+    this.groupsInFlight = new Set();
   }
 
   async refreshMappings() {
@@ -297,8 +302,9 @@ class NaturalLightEnforcer {
   }
 
   async handleLightConnected(lightId, source, connectivityId) {
-    const light = await this.client.getLightById(lightId);
+    let light = await this.client.getLightById(lightId);
     if (!light) {
+      console.log(`[${ts()}] Skipping ${lightId}: light resource not found`);
       return;
     }
 
@@ -310,17 +316,30 @@ class NaturalLightEnforcer {
     console.log(`[${ts()}] Light connected: ${label} (${lightId}) via ${source} ${connectivityId}`);
 
     if (light?.on?.on !== true) {
+      for (let attempt = 0; attempt < CONNECTED_ON_RETRY_COUNT; attempt += 1) {
+        await sleep(CONNECTED_ON_RETRY_DELAY_MS);
+        light = await this.client.getLightById(lightId);
+        if (light?.on?.on === true) {
+          break;
+        }
+      }
+    }
+
+    if (light?.on?.on !== true) {
+      console.log(`[${ts()}] Skipping ${label}: still not on after connect`);
       return;
     }
 
     const now = nowMonoSeconds();
     const groupId = this.lightToGroup.get(lightId);
     if (!groupId) {
+      console.log(`[${ts()}] Skipping ${label}: no room/zone mapping`);
       return;
     }
 
     const target = this.groupToTarget.get(groupId);
     if (!target) {
+      console.log(`[${ts()}] Skipping ${label}: no Natural Light target`);
       return;
     }
 
@@ -329,13 +348,12 @@ class NaturalLightEnforcer {
       return;
     }
 
-    const lastGroup = this.lastGroupActivation.get(groupId);
-    if (typeof lastGroup === 'number' && now - lastGroup < GROUP_DEBOUNCE_SECONDS) {
+    if (this.groupsInFlight.has(groupId)) {
       return;
     }
 
     this.lastActivation.set(lightId, now);
-    this.lastGroupActivation.set(groupId, now);
+    this.groupsInFlight.add(groupId);
 
     try {
       await this.client.recall(target.resourceType, target.id);
@@ -346,13 +364,10 @@ class NaturalLightEnforcer {
       } else {
         this.lastActivation.delete(lightId);
       }
-      if (typeof lastGroup === 'number') {
-        this.lastGroupActivation.set(groupId, lastGroup);
-      } else {
-        this.lastGroupActivation.delete(groupId);
-      }
+      this.groupsInFlight.delete(groupId);
       throw err;
     }
+    this.groupsInFlight.delete(groupId);
   }
 
   async pollConnectivityTransitions() {
