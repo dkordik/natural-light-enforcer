@@ -8,8 +8,15 @@ FIND_BRIDGE_SCRIPT="$ROOT_DIR/find_hue_bridge.sh"
 
 read_first_token() {
   local file="$1"
+  local token
   if [[ -f "$file" ]]; then
-    awk 'NF {print $1; exit}' "$file"
+    # Avoid awk from PATH; it may point to a binary for a different CPU.
+    while IFS= read -r token || [[ -n "$token" ]]; do
+      if [[ "$token" =~ [^[:space:]] ]]; then
+        printf '%s\n' "${token%%[[:space:]]*}"
+        return 0
+      fi
+    done < "$file"
   fi
 }
 

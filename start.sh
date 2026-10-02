@@ -7,8 +7,16 @@ HUE_API_KEY_FILE="$ROOT_DIR/.hue_api_key"
 
 read_first_token() {
   local file="$1"
+  local token
   if [[ -f "$file" ]]; then
-    awk 'NF {print $1; exit}' "$file"
+    # Do not rely on awk from PATH: the deployment host can have an
+    # incompatible Homebrew binary ahead of the system tools.
+    while IFS= read -r token || [[ -n "$token" ]]; do
+      if [[ "$token" =~ [^[:space:]] ]]; then
+        printf '%s\n' "${token%%[[:space:]]*}"
+        return 0
+      fi
+    done < "$file"
   fi
 }
 
