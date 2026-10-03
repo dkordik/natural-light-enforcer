@@ -1,16 +1,11 @@
 # Natural Light Enforcer
 
-Recalls the Hue `Natural Light` scene when a powered-off light comes back and its 
-`zigbee_connectivity` status returns to `connected`.
-
-Hue's `Natural Light` feature lets your lights use different hues depending on the time of day.
-Unfortunately, this doesn't work when lights are physically turned off, and when then turned on,
-they are often set up to recall the last turned off color, which can be jarring. This script makes
-sure they snap back to the proper color as soon as a physical on change is detected.
+[Philips Hue](https://www.philips-hue.com/)'s "Natural Light" feature lets your Hue lights adjust their color depending on time of day- bright white in the morning, sunlight color during the day, golden in the evening, and darker ambers at night.
+But for lights that use a physical "off" switch, turning back on at a different time of day can be jarring, as Hue only keeps light colors in sync with the time of day if they are powered on the whole time. This script watches for signs of a light powering on, and forces it to update to the currently appropriate Natural Light setting.
 
 ## Setup
 
-```bash
+```sh
 ./find_hue_bridge.sh
 ./find_hue_api_key.sh
 ```
@@ -19,14 +14,14 @@ This writes `.hue_ip` and `.hue_api_key`.
 
 ## Run
 
-```bash
+```sh
 ./start.sh
 ```
 
 ## Monitor
 Display an updated light connectivity table, for debugging
 
-```bash
-bash ./monitor_hue_signals.sh
+```sh
+./monitor_hue_signals.sh
 ```
 
