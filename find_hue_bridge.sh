@@ -110,6 +110,11 @@ if [[ -z "$FOUND_IP" ]]; then
   exit 1
 fi
 
+if [[ "${1:-}" == "--print-only" ]]; then
+  printf '%s\n' "$FOUND_IP"
+  exit 0
+fi
+
 printf '%s\n' "$FOUND_IP" > "$OUT_FILE"
 echo "Discovered Hue Bridge IP: $FOUND_IP"
 echo "Saved to $OUT_FILE"

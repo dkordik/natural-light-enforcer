@@ -4,6 +4,15 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+const runFile = promisify(execFile);
+
+async function discoverBridge() {
+  const { stdout } = await runFile(path.join(__dirname, 'find_hue_bridge.sh'), ['--print-only'], { timeout: 30000 });
+  return stdout.trim();
+}
+
 
 const DEBOUNCE_SECONDS = 2;
 const CONNECTIVITY_POLL_MS = 1000;
@@ -42,14 +51,75 @@ function loadConfig() {
 }
 
 class HueClient {
-  constructor(bridgeIp, appKey) {
+  constructor(bridgeIp, appKey, { discover = discoverBridge, save = (ip) => fs.writeFileSync(path.join(__dirname, '.hue_ip'), `${ip}\n`) } = {}) {
     this.bridgeIp = bridgeIp;
     this.appKey = appKey;
     this.baseUrl = `https://${bridgeIp}/clip/v2`;
+    this.discover = discover;
+    this.save = save;
+    this.recovery = null;
+    this.nextDiscoveryAt = 0;
+    this.streamController = null;
+  }
+
+  async rediscover() {
+    if (this.recovery) return this.recovery;
+    if (Date.now() < this.nextDiscoveryAt) return;
+    this.nextDiscoveryAt = Date.now() + 30000;
+    this.recovery = (async () => {
+      console.log(`Hue bridge at ${this.bridgeIp} unreachable; rediscovering...`);
+      const candidate = await this.discover();
+      if (!/^(?:\d{1,3}\.){3}\d{1,3}$/.test(candidate)) {
+        throw new Error('Discovery did not return a bridge IPv4 address');
+      }
+      // Verify the existing key before changing the saved address.
+      const response = await fetch(`https://${candidate}/clip/v2/resource/bridge`, {
+        headers: { 'hue-application-key': this.appKey },
+        signal: AbortSignal.timeout(10000),
+      });
+      const json = await response.json();
+      if (!response.ok || json.errors?.length || !json.data?.length) {
+        throw new Error(`Discovered bridge at ${candidate} did not accept the existing API key`);
+      }
+      this.save(candidate);
+      const previous = this.bridgeIp;
+      this.bridgeIp = candidate;
+      this.baseUrl = `https://${candidate}/clip/v2`;
+      if (previous !== candidate) this.streamController?.abort();
+      console.log(`Hue bridge verified at ${candidate}; saved address updated`);
+    })();
+    try {
+      await this.recovery;
+    } finally {
+      this.recovery = null;
+    }
+  }
+
+  async fetchBridge(pathName, options) {
+    const address = this.bridgeIp;
+    const send = () => fetch(`https://${this.bridgeIp}${pathName}`, {
+      ...options,
+      signal: AbortSignal.timeout(10000),
+    });
+    try {
+      return await send();
+    } catch (err) {
+      // Concurrent requests may already have repaired the address.
+      if (address === this.bridgeIp) {
+        try {
+          await this.rediscover();
+        } catch (discoveryError) {
+          console.error(`Hue discovery failed: ${discoveryError.message}`);
+        }
+      }
+      if (address !== this.bridgeIp) return send();
+      const cause = err.cause || err;
+      throw new Error(`Cannot reach Hue bridge at ${this.bridgeIp}: ${cause.code || cause.name}: ${cause.message}`, { cause: err });
+    }
   }
 
   async request(method, pathName, body) {
-    const res = await fetch(`${this.baseUrl}${pathName}`, {
+    const res = await this.fetchBridge(`/clip/v2${pathName}`, {
       method,
       headers: {
         'hue-application-key': this.appKey,
@@ -98,13 +168,21 @@ class HueClient {
   }
 
   async openEventStream() {
-    const res = await fetch(`https://${this.bridgeIp}/eventstream/clip/v2`, {
-      method: 'GET',
-      headers: {
-        'hue-application-key': this.appKey,
-        accept: 'text/event-stream',
-      },
-    });
+    this.streamController = new AbortController();
+    const timer = setTimeout(() => this.streamController.abort(), 10000);
+    let res;
+    try {
+      res = await fetch(`https://${this.bridgeIp}/eventstream/clip/v2`, {
+        signal: this.streamController.signal,
+        method: 'GET',
+        headers: {
+          'hue-application-key': this.appKey,
+          accept: 'text/event-stream',
+        },
+      });
+    } finally {
+      clearTimeout(timer);
+    }
     if (!res.ok) {
       const text = await res.text();
       throw new Error(`HTTP ${res.status} GET /eventstream/clip/v2: ${text}`);
@@ -414,7 +492,15 @@ async function main() {
   const client = new HueClient(bridgeIp, appKey);
   const enforcer = new NaturalLightEnforcer(client);
 
-  await enforcer.refreshMappings();
+  while (true) {
+    try {
+      await enforcer.refreshMappings();
+      break;
+    } catch (err) {
+      console.error(`Startup mapping refresh failed: ${err.message}; retrying in 5s`);
+      await sleep(RECONNECT_DELAY_MS);
+    }
+  }
 
   const pollTimer = setInterval(() => {
     enforcer.pollConnectivityTransitions().catch((err) => {
@@ -445,7 +531,11 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(err.message || err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(err.message || err);
+    process.exit(1);
+  });
+}
+
+module.exports = { HueClient };

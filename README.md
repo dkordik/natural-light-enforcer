@@ -18,6 +18,21 @@ This writes `.hue_ip` and `.hue_api_key`.
 ./start.sh
 ```
 
+If the saved bridge address stops responding, the enforcer automatically runs
+local discovery (with Hue cloud discovery as a fallback), verifies the discovered
+bridge with the existing API key, saves its new address, and reconnects. This
+works during startup and while running. Discovery attempts are limited to once
+per 30 seconds; startup retries every 5 seconds while the bridge is offline.
+
+To refresh the address manually:
+
+```sh
+./find_hue_bridge.sh
+./start.sh
+```
+
+Reserve the bridge's IP address in your router's DHCP settings to keep it stable.
+
 ## Monitor
 Display an updated light connectivity table, for debugging
 
